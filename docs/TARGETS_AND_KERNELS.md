@@ -100,7 +100,12 @@ toolchain.  Read this when you want to know *what runs on what*.
 **Scaffold (not productionised):**
 - `kernels/hip/fp8_attn/v_mfma_f32_16x16x32_fp8_fp8`
   &nbsp;&nbsp;&nbsp; *kernel language:* HIP C++ + pybind11
-  &nbsp;&nbsp;&nbsp; Compiles via hipcc; operand register layout incomplete.
+  &nbsp;&nbsp;&nbsp; Compiles via hipcc.  Operand register layout was
+  incomplete until F48 (2026-08-20) — loaded on 16 of 64 lanes and dropped
+  the K-group term — and is now correct and pinned by
+  `tests/test_mfma_fragment_layout.py`.  Still correctness-only: the B
+  operand gather is column-strided, so promoting this to a perf path needs
+  an LDS staging rewrite.  No caller today.
 
 ### Target 2 — NVIDIA H100 (`Vendor.NVIDIA`, sm_90a, CUDA 12.8)
 

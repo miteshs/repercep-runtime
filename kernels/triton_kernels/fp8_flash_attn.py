@@ -94,6 +94,68 @@ def _cache_key(B: int, H: int, Sq: int, Skv: int, D: int, causal: bool) -> str:
     return f"B{B}_H{H}_Sq{Sq}_Skv{Skv}_D{D}_C{int(causal)}"
 
 
+# --------------------------------------------------------------------------
+# AMD backend knobs
+# --------------------------------------------------------------------------
+# Triton's HIP backend exposes gfx-specific launch options that this kernel
+# never touched.  They are passed inside a ``triton.Config`` kwargs dict, the
+# same way AMD's own perf-kernels do it, and reach the compiler as HIPOptions
+# fields:
+#
+#   matrix_instr_nonkdim  MFMA tile selection -- 16 picks the 16x16x32 class,
+#                         32 picks 32x32x16.  This is the single knob that
+#                         corresponds to the tile-shape decision Modular's
+#                         AMD kernels make explicitly per dtype and regime.
+#   kpack                 how many K-groups a lane loads per instruction;
+#                         controls whether operand loads reach 16 bytes.
+#                         Deprecated on gfx950, live on gfx942.
+#   waves_per_eu          occupancy floor, emitted as the
+#                         ``amdgpu-waves-per-eu`` LLVM function attribute.
+#
+# What is NOT reachable from Triton, contrary to the obvious hope: the IGLP
+# scheduling intrinsics (``llvm.amdgcn.iglp.opt``,
+# ``llvm.amdgcn.sched.group.barrier``) that Modular's kernels use to interleave
+# MFMA/VALU/TRANS in the softmax loop.  Upstream Triton's ``hip`` language
+# extras export only ``libdevice, memrealtime, num_threads, num_warps, smid``,
+# and those intrinsics are scheduler directives with no ISA encoding, so
+# ``inline_asm_elementwise`` cannot reach them either.  ``HIPOptions`` does
+# declare a ``schedule_hint`` field, but it is documented upstream as
+# "Experimental; right now no effect."  The nearest live lever is
+# ``llvm_fn_attrs="amdgpu-sched-strategy=..."``, also marked experimental --
+# worth a manual A/B before it earns a place in this grid.
+_AMD_KNOB_NAMES = ("matrix_instr_nonkdim", "kpack", "waves_per_eu")
+
+
+def _supported_amd_knobs() -> tuple[str, ...]:
+    """Which AMD knobs this installed Triton actually accepts.
+
+    Passing an option the backend does not declare raises at launch, and the
+    set has churned across ROCm releases (``kpack`` is deprecated on gfx950).
+    Introspect rather than assume; on a CUDA-only install this returns ().
+    """
+    try:
+        import dataclasses
+
+        from triton.backends.amd.compiler import HIPOptions
+    except Exception:
+        return ()
+    declared = {f.name for f in dataclasses.fields(HIPOptions)}
+    return tuple(n for n in _AMD_KNOB_NAMES if n in declared)
+
+
+def _tune_amd_knobs_enabled() -> bool:
+    """Opt-in: extend the grid over the AMD knobs.
+
+    Off by default on purpose.  The default grid's size sets the initial-tune
+    tax that ``docs/OPTIMIZATION.md`` quotes, and every measured number in the
+    Cosmos ledger was taken with it -- so widening the search silently would
+    make old and new benchmark runs incomparable.  Set
+    ``REPERCEP_FP8_TUNE_AMD_KNOBS=1`` to explore, then promote a winner into
+    the default grid with a measurement to back it.
+    """
+    return os.environ.get("REPERCEP_FP8_TUNE_AMD_KNOBS", "") in ("1", "true", "on")
+
+
 # Autotune search grid.  Constraints baked in:
 # - BLOCK_M, BLOCK_N >= 32 (MFMA tile floor on gfx942 for FP8)
 # - BLOCK_N <= BLOCK_M*2 (avoid pathological LDS layouts)
@@ -155,6 +217,31 @@ def _autotune_configs() -> list:
         configs.append(
             triton.Config({"BLOCK_M": 256, "BLOCK_N": 128}, num_warps=nw, num_stages=3),
         )
+
+    # Opt-in second stage: sweep the AMD backend knobs at the canonical tiles
+    # only.  Anchored to two tile shapes rather than the full cross product so
+    # the added tune tax is ~2x, not ~12x.
+    knobs = _supported_amd_knobs() if _tune_amd_knobs_enabled() else ()
+    if knobs:
+        variants: list[dict] = []
+        if "matrix_instr_nonkdim" in knobs:
+            # 16 -> the 16x16x32 FP8 MFMA this kernel's fragments assume;
+            # 32 -> 32x32x16, fewer/larger instructions per tile.
+            variants += [{"matrix_instr_nonkdim": v} for v in (16, 32)]
+        if "kpack" in knobs:
+            variants += [{"kpack": 2}]
+        if "waves_per_eu" in knobs:
+            variants += [{"waves_per_eu": 2}]
+        for bm, bn in ((128, 64), (256, 128)):
+            for nw in (4, 8):
+                for extra in variants:
+                    configs.append(
+                        triton.Config(
+                            {"BLOCK_M": bm, "BLOCK_N": bn, **extra},
+                            num_warps=nw,
+                            num_stages=2,
+                        )
+                    )
     return configs
 
 
@@ -499,6 +586,14 @@ def fp8_flash_attention(
                 "num_warps": int(best.num_warps),
                 "num_stages": int(best.num_stages),
             }
+            # Carry any AMD backend knob the winning config set, so the
+            # fixed-config path reproduces the tuned launch rather than
+            # silently dropping back to the backend defaults.  Absent keys
+            # mean "backend default", which is what pre-2026-08 cache
+            # entries encode -- so old caches stay valid unchanged.
+            for _knob in _AMD_KNOB_NAMES:
+                if _knob in best.kwargs:
+                    winner[_knob] = int(best.kwargs[_knob])
             _record_config(B, H, Sq, Skv, D, causal, winner)
         except (AttributeError, KeyError):
             # Old triton without best_config exposed — fail silent; the
@@ -507,6 +602,8 @@ def fp8_flash_attention(
     else:
         # Cache hit — launch with the fixed config directly.
         grid = (triton.cdiv(Sq, cfg["BLOCK_M"]), B * H)
+        # AMD backend knobs, only those the cached winner actually set.
+        amd_knobs = {k: cfg[k] for k in _AMD_KNOB_NAMES if k in cfg}
         _fp8_flash_attn_fwd_impl[grid](
             q_fp8,
             k_fp8,
@@ -543,5 +640,6 @@ def fp8_flash_attention(
             FP8_MAX=FP8_E4M3_MAX,
             num_warps=cfg["num_warps"],
             num_stages=cfg["num_stages"],
+            **amd_knobs,
         )
     return out.to(q.dtype)

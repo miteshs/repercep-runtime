@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -252,3 +252,120 @@ def test_fp8_autotune_grid_constraints() -> None:
         assert bm * bn <= 256 * 256
         assert cfg.num_warps in (4, 8, 16)
         assert cfg.num_stages in (2, 3)
+
+
+# ----- AMD backend knobs (matrix_instr_nonkdim / kpack / waves_per_eu) ------
+#
+# These reach Triton's HIP backend as HIPOptions fields, passed inside the
+# Config kwargs dict.  The default grid must stay byte-identical so the
+# initial-tune tax quoted in docs/OPTIMIZATION.md — and every Cosmos number
+# measured under it — remains comparable; the sweep is opt-in.
+
+
+def _kernel_module() -> Any:
+    import sys
+    from pathlib import Path
+
+    kernels_dir = Path(__file__).resolve().parent.parent / "kernels"
+    if str(kernels_dir) not in sys.path:
+        sys.path.insert(0, str(kernels_dir))
+    from triton_kernels import fp8_flash_attn
+
+    return fp8_flash_attn
+
+
+@pytest.mark.skipif(not _HAS_TRITON, reason="triton required to import the kernel module")
+def test_amd_knob_sweep_is_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = _kernel_module()
+    monkeypatch.delenv("REPERCEP_FP8_TUNE_AMD_KNOBS", raising=False)
+    assert not mod._tune_amd_knobs_enabled()
+    # The module-level grid was built with the sweep off, so no config in it
+    # may carry an AMD knob.
+    for cfg in mod._AUTOTUNE_CONFIGS:
+        assert not (set(cfg.kwargs) & set(mod._AMD_KNOB_NAMES))
+
+
+@pytest.mark.skipif(not _HAS_TRITON, reason="triton required to import the kernel module")
+def test_amd_knob_support_is_introspected_not_assumed() -> None:
+    """The knob set must come from the installed backend, not a hardcoded list.
+
+    ``kpack`` is deprecated on gfx950 and the field set has churned across
+    ROCm releases; passing an undeclared option raises at launch.  On a
+    CUDA-only or CPU-only install this is legitimately empty.
+    """
+    mod = _kernel_module()
+    supported = mod._supported_amd_knobs()
+    assert isinstance(supported, tuple)
+    assert set(supported) <= set(mod._AMD_KNOB_NAMES)
+
+
+@pytest.mark.skipif(not _HAS_TRITON, reason="triton required to import the kernel module")
+def test_amd_knob_sweep_extends_grid_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = _kernel_module()
+    baseline = len(mod._autotune_configs())
+
+    monkeypatch.setenv("REPERCEP_FP8_TUNE_AMD_KNOBS", "1")
+    extended = mod._autotune_configs()
+
+    if not mod._supported_amd_knobs():
+        # No HIP backend on this host: the sweep is a no-op rather than an error.
+        assert len(extended) == baseline
+        pytest.skip("no AMD backend knobs declared by this triton install")
+
+    assert len(extended) > baseline
+    # Bounded: anchored to two tile shapes, so the tune tax stays ~2x, not ~12x.
+    assert len(extended) <= baseline * 3
+    knobbed = [c for c in extended if set(c.kwargs) & set(mod._AMD_KNOB_NAMES)]
+    assert knobbed, "sweep enabled but no config carries a knob"
+    for cfg in knobbed:
+        assert (cfg.kwargs["BLOCK_M"], cfg.kwargs["BLOCK_N"]) in ((128, 64), (256, 128))
+        # One knob at a time — a full cross product is what blows up the tax.
+        assert len(set(cfg.kwargs) & set(mod._AMD_KNOB_NAMES)) == 1
+
+
+@pytest.mark.skipif(not _HAS_TRITON, reason="triton required to import the kernel module")
+def test_amd_knobs_round_trip_through_the_cache(
+    tmp_path: _Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tuned knob must survive to the fixed-config launch path.
+
+    Without this the second process silently reverts to backend defaults and
+    the cached "winner" is not the configuration that actually won.
+    """
+    cache_path = tmp_path / "fp8_autotune.json"
+    monkeypatch.setenv("REPERCEP_FP8_AUTOTUNE_CACHE", str(cache_path))
+    mod = _kernel_module()
+
+    cfg = {
+        "BLOCK_M": 128,
+        "BLOCK_N": 64,
+        "num_warps": 4,
+        "num_stages": 2,
+        "matrix_instr_nonkdim": 32,
+    }
+    mod._record_config(1, 8, 8192, 8192, 128, False, cfg)
+    resolved = mod._resolve_config(1, 8, 8192, 8192, 128, False)
+    assert resolved == cfg
+    assert {k: resolved[k] for k in mod._AMD_KNOB_NAMES if k in resolved} == {
+        "matrix_instr_nonkdim": 32
+    }
+
+
+@pytest.mark.skipif(not _HAS_TRITON, reason="triton required to import the kernel module")
+def test_pre_knob_cache_entries_stay_valid(
+    tmp_path: _Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cache files written before the knobs existed must still resolve.
+
+    Absent keys mean "backend default", so no schema bump is needed and no
+    user loses their tuned shapes on upgrade.
+    """
+    cache_path = tmp_path / "fp8_autotune.json"
+    monkeypatch.setenv("REPERCEP_FP8_AUTOTUNE_CACHE", str(cache_path))
+    mod = _kernel_module()
+
+    legacy = {"BLOCK_M": 256, "BLOCK_N": 128, "num_warps": 8, "num_stages": 2}
+    mod._record_config(2, 32, 109120, 109120, 128, False, legacy)
+    resolved = mod._resolve_config(2, 32, 109120, 109120, 128, False)
+    assert resolved == legacy
+    assert not (set(resolved) & set(mod._AMD_KNOB_NAMES))

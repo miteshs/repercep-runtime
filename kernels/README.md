@@ -1,11 +1,23 @@
 # kernels/ — native compute kernels (Triton / CUDA / HIP)
 
-**Empty until we move off SDPA→aotriton.** Today the MI300X attention path
-goes through PyTorch's `scaled_dot_product_attention`, which on ROCm 7.2
-routes through aotriton flash kernels under the hood (see
-`docs/adr/0002-rocm-attention-primitive.md`). That is fast enough for v0.1.
-When we need shape-specific or fusion-specific kernels we don't get from
-SDPA's autorouting, they land here.
+**Populated.** The default MI300X attention path still goes through PyTorch's
+`scaled_dot_product_attention`, which on ROCm 7.2 routes to aotriton flash
+kernels under the hood (see `docs/adr/0002-rocm-attention-primitive.md`).
+What lives here are the ops that beat or extend that floor:
+
+| Path | What | Status |
+|---|---|---|
+| `triton_kernels/fp8_flash_attn.py` | FP8 FA-2 for gfx942 | production, opt-in via `REPERCEP_FP8_ATTENTION=1` |
+| `triton_kernels/fp8_flash_attn_hopper.py` | sm_90a sibling | slower than cuDNN-FA3 today (F29, F42) |
+| `triton_kernels/fp8_flash_attn_ada.py` | sm_89 sibling | see F44 |
+| `cpu/amx_*` | AMX attention (bf16 / fp16 / int8) | production on Sapphire Rapids |
+| `hip/fp8_attn/` | MFMA FP8 GEMM | **toolchain proof-of-life only — not wired to any caller** |
+
+`hip/fp8_attn/` deserves its warning label: it exists so the HIP toolchain is
+proven end-to-end (kernel → pybind → `AttentionOp`), not because anything calls
+it. Its operand register layout is pinned by `tests/test_mfma_fragment_layout.py`
+after F48 found it loading on 16 of 64 lanes. Promoting it to a perf path needs
+an LDS staging rewrite; until then the FP8 perf path is the Triton kernel.
 
 ## Why this is at the repo root, not under src/
 
