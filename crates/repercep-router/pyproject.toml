@@ -1,0 +1,36 @@
+# Per-crate pyproject so `maturin develop --manifest-path crates/repercep-router/Cargo.toml`
+# installs the extension at the canonical import path `repercep_router._native`.
+#
+# This is intentionally minimal: the root `pyproject.toml` is hatchling-based
+# (it owns the Python package `repercep`), and the Rust extension is a separate
+# distribution that the runtime imports. Per-crate maturin metadata keeps the
+# two build systems decoupled — see crates/README.md and ADR-0005.
+
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "repercep-router"
+version = "0.0.1"
+description = "Per-request orchestration and frame ordering for the Repercep serving layer."
+requires-python = ">=3.11"
+license = { text = "LicenseRef-Proprietary" }
+authors = [{ name = "Repercep" }]
+classifiers = [
+  "Programming Language :: Rust",
+  "Programming Language :: Python :: Implementation :: CPython",
+]
+
+[tool.maturin]
+# Library name in Cargo.toml is `_native`; pair it with `repercep_router` so the
+# .so lands at site-packages/repercep_router/_native.<abi>.so and the Python
+# wrapper at src/repercep/runtime/router.py can do `from repercep_router._native
+# import …` per the crates/ convention.
+module-name = "repercep_router._native"
+# We have no Python source folder for this distribution — the .so is the whole
+# wheel. The Python wrapper that re-exports from `repercep_router._native` lives
+# in the main runtime package (`src/repercep/runtime/router.py`) and is shipped
+# by the root pyproject.toml.
+python-source = "python"
+features = ["pyo3/extension-module"]

@@ -1,0 +1,35 @@
+# Per-crate pyproject for `maturin develop`.
+#
+# The Repercep workspace's top-level pyproject.toml describes the pure-Python
+# `repercep-runtime` package (hatchling). This file is the maturin-side build
+# config for the `repercep_cache._native` extension module specifically — it
+# does not replace the workspace pyproject, it complements it. `maturin
+# develop --manifest-path crates/repercep-cache/Cargo.toml` picks this up.
+
+[build-system]
+requires = ["maturin>=1.7"]
+build-backend = "maturin"
+
+[project]
+name = "repercep-cache"
+version = "0.0.1"
+description = "Paged latent cache for world-model serving — Rust core with PyO3 bindings."
+requires-python = ">=3.11"
+license = { text = "LicenseRef-Proprietary" }
+authors = [{ name = "Repercep" }]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "License :: Other/Proprietary License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+
+[tool.maturin]
+# Build into the repercep_cache._native module so the Python wrapper at
+# src/repercep/runtime/latent_cache.py can do `from repercep_cache._native import ...`.
+# `python-source` is the mixed-Python/Rust layout: `python/repercep_cache/` is
+# the package, `_native` is the PyO3 extension submodule.
+module-name = "repercep_cache._native"
+python-source = "python"
+# pyo3 + abi3 — one wheel per Python >= 3.11.
+features = ["pyo3/extension-module"]

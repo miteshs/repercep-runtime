@@ -1,0 +1,26 @@
+[package]
+name         = "repercep-scheduler"
+description  = "Request scheduler for the Repercep runtime — Rust core with PyO3 bindings."
+version      = { workspace = true }
+edition      = { workspace = true }
+license      = { workspace = true }
+repository   = { workspace = true }
+rust-version = { workspace = true }
+
+[lib]
+# Unique across the workspace to avoid target/release/lib_native.so collision;
+# Python import path stays repercep_scheduler._native via pyproject.toml.
+name       = "repercep_scheduler_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3        = { workspace = true }
+tokio       = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }

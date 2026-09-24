@@ -1,0 +1,9 @@
+# Pin the Rust toolchain so the workspace builds identically across machines
+# and CI. Stable is the right channel for a serving runtime — no nightly
+# features in the Rust core. Kernel-adjacent Rust (if any) would live in its
+# own toolchain pin under kernels/, not here.
+
+[toolchain]
+channel    = "stable"
+components = ["rustfmt", "clippy"]
+profile    = "minimal"

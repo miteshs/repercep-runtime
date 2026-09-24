@@ -1,0 +1,5 @@
+# Maturin builds the PyO3 extension module into python/repercep_scheduler/
+# alongside the hand-written __init__.py. The .so is a build artifact —
+# never committed, always reproducible from `maturin develop`.
+python/repercep_scheduler/_native.abi3.so
+python/repercep_scheduler/__pycache__/

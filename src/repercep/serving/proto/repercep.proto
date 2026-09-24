@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package repercep.v1;
+
+// Repercep Runtime — gRPC contract for world-model inference.
+//
+// This is the API-first gRPC contract. It is the sibling of the HTTP API in
+// `repercep.serving.app` and is kept in lockstep with `repercep.runtime.types`.
+// Code generation (grpcio-tools) is deferred until the HTTP path is proven;
+// the contract is frozen here first by design.
+
+service RepercepRuntime {
+  // Engine identity and readiness.
+  rpc Info(InfoRequest) returns (EngineInfo);
+
+  // Server-streaming generation: one FrameChunk per frame, emitted in order
+  // as each frame finishes — the gRPC analogue of the HTTP NDJSON stream.
+  rpc GenerateStream(GenerationRequest) returns (stream FrameChunk);
+}
+
+message InfoRequest {}
+
+message EngineInfo {
+  string model_name = 1;
+  string backend = 2;
+  string device = 3;
+  string dtype = 4;
+  bool ready = 5;
+}
+
+enum ConditioningKind {
+  CONDITIONING_KIND_NONE = 0;   // pure Text2World
+  CONDITIONING_KIND_IMAGE = 1;  // Video2World from a single frame
+  CONDITIONING_KIND_VIDEO = 2;  // Video2World continuing a clip
+}
+
+message ConditioningInput {
+  ConditioningKind kind = 1;
+  optional string uri = 2;  // pixels resolved out of band, never inline
+}
+
+message GenerationParams {
+  uint32 num_frames = 1;
+  uint32 height = 2;
+  uint32 width = 3;
+  uint32 num_inference_steps = 4;
+  float guidance_scale = 5;
+  uint32 fps = 6;
+  optional int64 seed = 7;
+}
+
+message GenerationRequest {
+  string prompt = 1;
+  optional string negative_prompt = 2;
+  GenerationParams params = 3;
+  ConditioningInput conditioning = 4;
+}
+
+message FrameChunk {
+  uint32 frame_index = 1;
+  uint32 total_frames = 2;
+  uint32 height = 3;
+  uint32 width = 4;
+  double latency_ms = 5;
+  optional string uri = 6;     // out-of-band pixel payload location
+  optional bytes pixels = 7;   // optional inline payload (small frames only)
+}

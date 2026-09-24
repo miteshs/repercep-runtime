@@ -1,0 +1,66 @@
+# Repercep Rust workspace.
+#
+# Three crates live here (see [workspace] below): the paged latent-cache
+# manager, the request scheduler, and per-request orchestration — all
+# PyO3-bound into the Python surface. The polyglot scaffold (Cargo + uv +
+# future CMake for kernels) exists so this stays "add a crate," not "stand
+# up build tooling under deadline" — see docs/adr/0004 for how that fork
+# was resolved.
+#
+# Why this exists:
+#   The handoff doc (~/Mirage_Cowork_Handoff.md, "Language stack" section) names
+#   Rust for the Runtime core's scheduler, request router, and paged latent-cache
+#   manager — with Python bindings via PyO3 — to share one core between the
+#   datacenter API and any deterministic-latency edge path.
+#
+# What lives here:
+#   crates/repercep-cache       — paged latent-cache manager (PyO3-bound)
+#   crates/repercep-scheduler   — request scheduler
+#   crates/repercep-router      — per-request orchestration (split from FastAPI)
+#
+# What does NOT live here:
+#   - Triton / CUDA kernels → kernels/ (separate codebase, different rules; see
+#     handoff "Mixing clean-architecture and perf code produces clean-but-slow
+#     or fast-but-unmaintainable").
+#   - Python surface (model loading, denoise loop, serving, CLI) → src/repercep/.
+
+[workspace]
+members  = [
+    "crates/repercep-cache",
+    "crates/repercep-scheduler",
+    "crates/repercep-router",
+]
+resolver = "3"
+
+[workspace.package]
+version    = "0.0.1"
+edition    = "2024"
+license    = "LicenseRef-Proprietary"
+repository = "https://github.com/miteshs/Repercep"
+authors    = ["Repercep"]
+rust-version = "1.85"
+
+# Pinned shared deps. Add a new dep here, not inside individual crates, unless
+# the crate is genuinely the only consumer.
+[workspace.dependencies]
+# Python interop — abi3-py311 means one wheel works for every CPython >= 3.11.
+pyo3            = { version = "0.25", features = ["extension-module", "abi3-py311"] }
+# Async runtime — used by scheduler + router. The cache is sync.
+tokio           = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+# Serialization — request/response types crossing the FFI boundary.
+serde           = { version = "1", features = ["derive"] }
+serde_json      = "1"
+# Errors — thiserror for library code (typed errors at the boundary). anyhow is
+# DELIBERATELY NOT in this list: it belongs only to binaries/tests.
+thiserror       = "2"
+# Observability — emit spans/events; subscribers wire only in tests/bins.
+tracing         = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Faster locks than std for the cache hot path (no Mutex poisoning to handle).
+parking_lot     = "0.12"
+
+[profile.release]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+debug         = "line-tables-only"

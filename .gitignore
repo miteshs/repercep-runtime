@@ -1,0 +1,35 @@
+.venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Rust workspace artifacts
+target/
+**/*.rs.bk
+# PyO3 extension modules built by `maturin develop`
+crates/**/python/**/*.so
+crates/**/python/**/*.abi3.so
+crates/**/python/**/*.pyd
+
+# model weights / large artifacts — never commit
+weights/
+*.safetensors
+*.pt
+*.bin
+
+# local runtime
+.cache/
+*.log
+benchmark-results/
+
+# CPU AMX kernel build artifacts
+kernels/cpu/*/build/
+kernels/cpu/*/*.so
+
+.DS_Store
+uv.lock

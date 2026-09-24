@@ -1,0 +1,31 @@
+[package]
+name         = "repercep-router"
+description  = "Per-request orchestration and frame ordering for the Repercep serving layer."
+version      = { workspace = true }
+edition      = { workspace = true }
+license      = { workspace = true }
+repository   = { workspace = true }
+rust-version = { workspace = true }
+
+[lib]
+# Unique across the workspace to avoid target/release/lib_native.so collision;
+# Python import path stays repercep_router._native via pyproject.toml.
+name       = "repercep_router_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3        = { workspace = true }
+tokio       = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+parking_lot = { workspace = true }
+# True-async Python boundary: `push_frame` and `FrameStream.__anext__` are
+# Python `async def` bound to tokio via this crate. Matches pyo3 0.25 — newer
+# 0.28 requires pyo3 0.26+. This is the ONLY router-specific dep we add.
+pyo3-async-runtimes = { version = "0.25", features = ["tokio-runtime"] }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
+tokio              = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

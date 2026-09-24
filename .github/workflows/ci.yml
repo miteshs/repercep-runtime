@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-typecheck-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          # The repo's flow is `uv venv` + `uv pip install`, not `uv sync` —
+          # uv.lock is deliberately gitignored (see .gitignore), so the
+          # default cache key (which globs for uv.lock) never matches. Key
+          # on pyproject.toml instead.
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Create venv
+        run: uv venv --python 3.11 .venv
+
+      # torch is deliberately not a declared dependency (pyproject.toml pins
+      # it to the ROCm wheel index via [tool.uv.sources], since MI300X is the
+      # lead target). Installing extras directly on this CPU-only runner
+      # would pull that ROCm-pinned torch/torchvision (large, GPU-oriented,
+      # and the wrong artifact to test against here) or fail outright where
+      # no matching wheel exists for the runner's platform. Install a plain
+      # CPU wheel first, from an explicit index, before touching any extra.
+      - name: Install CPU torch
+        run: |
+          uv pip install --python .venv \
+            torch torchvision \
+            --index-url https://download.pytorch.org/whl/cpu
+
+      # [serving,dev] only — deliberately not [models], which binds
+      # torchvision (and therefore torch) to the ROCm source above and would
+      # fight the CPU install just made. The heavy [models] deps
+      # (transformers/diffusers/torchvision-GPU-ops) are behind lazy imports
+      # and pytest.importorskip guards project-wide, verified to skip cleanly
+      # without them — imageio is the one [models] dep actually needed for a
+      # clean mypy run (test_fvd.py / test_eval_quality_parity_gpu.py), so
+      # it's installed loose alongside, not via the extra.
+      - name: Install package + serving/dev extras + imageio
+        run: |
+          uv pip install --python .venv -e ".[serving,dev]"
+          uv pip install --python .venv "imageio>=2.34" "imageio-ffmpeg>=0.5"
+
+      - name: Lint (ruff)
+        run: make lint
+
+      - name: Typecheck (mypy --strict)
+        run: make typecheck
+
+      - name: Test (pytest)
+        run: make test
+
+      # Fast end-to-end smoke: the --fake path needs only CPU torch (no GPU,
+      # no downloaded weights) and exercises reset/step/plan through the real
+      # engine + serving-adjacent bench harness, not just unit-level mocks.
+      - name: Smoke — control-loop bench (--fake, CPU)
+        run: |
+          .venv/bin/python scripts/bench_control_loop.py \
+            --engine vjepa2-ac --fake --backend cpu | tee /tmp/smoke.log
+          grep -q '"mode": "control_loop_bench_v0"' /tmp/smoke.log

@@ -1,0 +1,198 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "repercep-runtime"
+version = "0.0.1"
+description = "Repercep Runtime — a world-model-native inference engine. MI300x-first."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "LicenseRef-Proprietary" }
+authors = [{ name = "Repercep" }]
+keywords = ["world-models", "inference", "diffusion", "rocm", "mi300x", "cosmos"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "License :: Other/Proprietary License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "numpy>=1.26",
+  "typing-extensions>=4.11",
+]
+
+[project.optional-dependencies]
+# NOTE: torch is intentionally NOT listed here. It must be installed from the
+# ROCm wheel index, never PyPI (PyPI torch is CUDA-only). See README "Setup".
+models = [
+  "transformers>=4.44",
+  "diffusers>=0.31",
+  "huggingface-hub>=0.25",
+  "accelerate>=0.34",  # required by diffusers for low_cpu_mem_usage loading
+  "torchvision>=0.22",  # diffusers' Cosmos transformer needs transforms.functional
+  "einops>=0.8",
+  "safetensors>=0.4",
+  "imageio>=2.34",
+  "imageio-ffmpeg>=0.5",
+]
+serving = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "grpcio>=1.66",
+  # A transitive dep of starlette/fastapi already; declared explicitly
+  # because app.py imports it directly (CancelScope shielding for the
+  # world-session release-on-disconnect cleanup), not just implicitly.
+  "anyio>=4.0",
+]
+# NVIDIA Cosmos safety guardrail. Required for deployment under the NVIDIA Open
+# Model License; install with `pip install -e ".[guardrail]"`.
+guardrail = [
+  "cosmos-guardrail>=0.3",
+]
+# NVIDIA H100/H200 (Hopper) extras — TransformerEngine is the NVIDIA-canonical
+# FP8 attention path (FA-3 + DelayedScaling recipe via cuDNN). flash-attn is
+# the Dao-AILab build that ships FA-3 alongside FA-2 from `>=2.7`. Both are
+# OPTIONAL — Repercep falls back to the Triton FP8 kernel and the SDPA floor
+# without either. See ADR-0006 and docs/COSMOS_ON_H100.md.
+#
+# `flash-attn` is left COMMENTED OUT here because installing it requires
+# `--no-build-isolation` (the package can't see torch under PEP 517 build
+# isolation) and a matching CUDA toolchain at build time. We document the
+# install command in docs/COSMOS_ON_H100.md §Reproduce instead, so a plain
+# `pip install -e ".[nvidia]"` does not silently fail.
+nvidia = [
+  # "flash-attn>=2.7",                  # install separately, see COSMOS_ON_H100.md
+  "transformer-engine[pytorch]>=1.12",
+]
+# Intel CPU AMX extras — Intel Extension for PyTorch (IPEX) for the
+# fused-attention path that explicitly targets AMX_BF16 on Sapphire
+# Rapids and newer.  OPTIONAL — Repercep's AMXSDPAAttention floor still
+# gets oneDNN-AMX wins on BF16 matmul without IPEX, and the custom
+# `kernels/cpu/amx_attn/` kernel is in-tree (no third-party dep).
+# See ADR-0007 and docs/COSMOS_ON_CPU.md.
+#
+# The PEP 508 marker gates IPEX to Linux x86_64 because Intel only
+# publishes wheels for that platform — on macOS (Intel or Apple
+# Silicon) or ARM Linux the dependency would otherwise fail to
+# resolve and turn `pip install -e ".[cpu]"` into a hard error on
+# every developer laptop that isn't a Xeon box. Off-platform users
+# still get a working install; they just fall back to the AMX SDPA
+# floor, which is the documented behaviour above.
+cpu = [
+  "intel-extension-for-pytorch>=2.6,<3; sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+dev = [
+  "mypy>=1.11",
+  "ruff>=0.6",
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "httpx>=0.27",  # required by fastapi.testclient.TestClient
+  # Rust ↔ Python build tool. `make rust-install` runs `maturin develop` over
+  # each crate in the workspace. See docs/adr/0005-rust-core-fork-resolved.md.
+  "maturin>=1.7",
+  # FVD I3D feature extractor — scripts/compute_fvd.py uses the canonical
+  # `i3d_r50` backbone (Kinetics-400 pretrained) from pytorchvideo.
+  "pytorchvideo>=0.1.5",
+]
+
+[project.scripts]
+repercep = "repercep.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/repercep"]
+
+# torch resolves from the ROCm wheel index that matches the system ROCm (7.2).
+# This is the default because MI300X is the lead workload (ADR-0001).
+# For NVIDIA H100/H200 hosts: install torch FIRST from the cu128 wheel index
+# BEFORE running `pip install -e ".[models,serving,nvidia,dev]"`, e.g.
+#   uv pip install --python .venv torch torchvision \
+#       --index-url https://download.pytorch.org/whl/cu128
+# Then run the make install line, which will respect the already-installed
+# CUDA torch wheel and skip the ROCm one. See docs/COSMOS_ON_H100.md §Reproduce
+# for the full sequence.
+[tool.uv.sources]
+torch = { index = "rocm" }
+torchvision = { index = "rocm" }
+
+[[tool.uv.index]]
+name = "rocm"
+url = "https://download.pytorch.org/whl/rocm7.2"
+explicit = true
+
+# Marker index for the cu128 wheels. Not bound to `torch` above (which would
+# force a single channel); left here so users can `uv pip install ... --index=cu128`
+# from a single source of truth.
+[[tool.uv.index]]
+name = "cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+warn_redundant_casts = true
+plugins = ["pydantic.mypy"]
+files = ["src/repercep", "tests"]
+
+[[tool.mypy.overrides]]
+module = [
+  "torch.*",
+  "transformers.*",
+  "torchvision.*",
+  "diffusers.*",
+  "triton.*",
+  "triton_kernels.*",
+  "flash_attn.*",
+  "flash_attn_interface.*",
+  "transformer_engine.*",
+  "intel_extension_for_pytorch.*",
+  "kernels.cpu.*",
+  "cosmos_guardrail.*",
+  "nltk.*",
+  "pytorchvideo.*",
+  # Optional GPU-quality-eval dependency (LPIPS perceptual metric), not in any
+  # packaged extra — installed ad hoc on a GPU box running the quality-parity
+  # tests. See tests/test_eval_quality_parity_gpu.py.
+  "lpips.*",
+  # LingBot-VA research repo (Phase-1 dependency, GPU box only) + its imports.
+  "wan_va.*",
+  "einops.*",
+  "huggingface_hub.*",
+  # DreamZero research repo (Phase-1 dependency, GPU box only, sys.path-
+  # inserted rather than pip installed) + its imports.
+  "groot.*",
+  "safetensors.*",
+  "yaml.*",
+  # PyO3-built extensions ship `py.typed` markers but no .pyi stubs, so mypy
+  # treats them as Any. Stubs are a future-Stage-3.5 item; for now treat the
+  # compiled `_native` submodules like other untyped third-party imports.
+  "repercep_cache.*",
+  "repercep_router.*",
+  "repercep_scheduler.*",
+]
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF", "ANN", "TCH"]
+ignore = ["ANN401"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ANN"]
+"scripts/*" = ["ANN", "TCH"]
+# FastAPI resolves route annotations at runtime (get_type_hints at startup),
+# so request/response types cannot live under TYPE_CHECKING here.
+"src/repercep/serving/app.py" = ["TCH"]
+"src/repercep/serving/llm_proxy.py" = ["TCH"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

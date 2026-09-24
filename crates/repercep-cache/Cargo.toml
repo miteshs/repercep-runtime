@@ -1,0 +1,25 @@
+[package]
+name         = "repercep-cache"
+description  = "Paged latent cache for world-model serving — Rust core with PyO3 bindings."
+version      = { workspace = true }
+edition      = { workspace = true }
+license      = { workspace = true }
+repository   = { workspace = true }
+rust-version = { workspace = true }
+
+[lib]
+# Cargo lib name must be unique within the workspace (otherwise every crate
+# would build to the same `target/release/lib_native.so` and the last build
+# would win). The Python import path is preserved via `[tool.maturin]
+# module-name = "repercep_cache._native"` in this crate's pyproject.toml.
+name       = "repercep_cache_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3        = { workspace = true }
+thiserror   = { workspace = true }
+parking_lot = { workspace = true }
+tracing     = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
